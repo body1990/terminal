@@ -379,9 +379,13 @@
     <button class="pbtn danger" id="alClearAll">Delete all</button>
   </div>
   <h3>24/7 server alerts</h3>
-  <div class="hint" id="alServerHint">Export your alerts and upload the file to your Oracle server so they fire even when this app, the website, and your PC are all closed. The server messages Telegram directly.</div>
+  <div class="hint" id="alServerHint">Send your alerts to your Oracle server so they fire even when this app, the website, and your PC are all closed. <b>Sync to server</b> pushes them over Telegram — no upload. (Needs your Telegram token set below, and <code>telegram_sync = 1</code> on the server.)</div>
   <div class="btnrow" style="margin-top:6px">
-    <button class="pbtn" id="alExport">Export alerts.json</button>
+    <button class="pbtn" id="alSync">⬆ Sync to server</button>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dim)"><input type="checkbox" id="alAutoSync"> auto-sync on change</label>
+  </div>
+  <div class="btnrow" style="margin-top:6px">
+    <button class="pbtn ghost" id="alExport">Export alerts.json</button>
     <button class="pbtn ghost" id="alImport">Import</button>
     <input type="file" id="alImportFile" accept="application/json,.json" style="display:none">
   </div>
@@ -1075,10 +1079,27 @@ function renderAlerts(){
         <button class="x" data-id="${a.id}">del</button>
       </div>
     </div>`;}).join('');
-  box.querySelectorAll('.x').forEach(x=>x.onclick=()=>{alerts=alerts.filter(a=>a.id!==x.dataset.id);jset('alerts',alerts);renderAlerts();toast('Alert deleted');});
-  box.querySelectorAll('[data-tg]').forEach(b=>b.onclick=()=>{const a=alerts.find(z=>z.id===b.dataset.tg);if(a){a.off=!a.off;if(!a.off)a.fired=false;jset('alerts',alerts);renderAlerts();}});
+  box.querySelectorAll('.x').forEach(x=>x.onclick=()=>{alerts=alerts.filter(a=>a.id!==x.dataset.id);jset('alerts',alerts);renderAlerts();toast('Alert deleted');maybeAutoSync();});
+  box.querySelectorAll('[data-tg]').forEach(b=>b.onclick=()=>{const a=alerts.find(z=>z.id===b.dataset.tg);if(a){a.off=!a.off;if(!a.off)a.fired=false;jset('alerts',alerts);renderAlerts();maybeAutoSync();}});
 }
 document.querySelectorAll('[data-alf]').forEach(b=>b.onclick=()=>{alFilter=b.dataset.alf;renderAlerts();});
+async function syncToServer(silent){
+  const t=store.get('tg_token'),c=store.get('tg_chat');
+  if(!t||!c){if(!silent)toast('Set Telegram token & chat ID first');return false;}
+  const clean=alerts.map(({fired,firedAt,...a})=>a);
+  const text='BTALERT v1 '+JSON.stringify({alerts:clean});
+  try{
+    const r=await fetch(`https://api.telegram.org/bot${t}/sendMessage`,{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({chat_id:c,text,disable_notification:true})});
+    if(r.ok){if(!silent)toast('Synced '+clean.length+' alert(s) to server');return true;}
+    if(!silent)toast('Sync failed ('+r.status+')');return false;
+  }catch(e){if(!silent)toast('Sync failed: '+e.message);return false;}
+}
+$('#alSync').onclick=()=>syncToServer(false);
+$('#alAutoSync').checked=store.get('autosync')==='1';
+$('#alAutoSync').onchange=e=>{store.set('autosync',e.target.checked?'1':'0');if(e.target.checked)syncToServer(false);};
+function maybeAutoSync(){if(store.get('autosync')==='1')syncToServer(true);}
 $('#alExport').onclick=()=>{
   if(!alerts.length){toast('No alerts to export');return;}
   // server expects the same alert objects; drop transient browser state
@@ -1096,14 +1117,14 @@ $('#alImportFile').onchange=e=>{
     if(!Array.isArray(data))throw new Error('not an alert list');
     const have=new Set(alerts.map(a=>a.id));let added=0;
     for(const a of data){if(a&&a.id&&!have.has(a.id)){alerts.push({...a,fired:false});added++;}}
-    jset('alerts',alerts);renderAlerts();toast('Imported '+added+' new alert(s)');
+    jset('alerts',alerts);renderAlerts();toast('Imported '+added+' new alert(s)');maybeAutoSync();
   }catch(err){toast('Import failed: '+err.message);}};
   r.readAsText(f);e.target.value='';
 };
 $('#alClearFired').onclick=()=>{alerts=alerts.filter(a=>!a.fired);jset('alerts',alerts);renderAlerts();toast('Cleared triggered alerts');};
-$('#alClearAll').onclick=()=>{if(!alerts.length)return;if(confirm('Delete all '+alerts.length+' alerts?')){alerts=[];jset('alerts',alerts);renderAlerts();toast('All alerts deleted');}};
+$('#alClearAll').onclick=()=>{if(!alerts.length)return;if(confirm('Delete all '+alerts.length+' alerts?')){alerts=[];jset('alerts',alerts);renderAlerts();toast('All alerts deleted');maybeAutoSync();}};
 function addAlert(){const kind=$('#alKind').value,tfv=$('#alTf').value,cond=$('#alCond').value,value=parseFloat($('#alVal').value);if(!isFinite(value)){toast('Enter a value');return;}
-  alerts.push({id:Math.random().toString(36).slice(2,9),mk:market,ex:exFor(),sym:symbol,kind,tf:tfv,cond,value,fired:false});jset('alerts',alerts);renderAlerts();$('#alVal').value='';toast('Alert added · '+dispName());}
+  alerts.push({id:Math.random().toString(36).slice(2,9),mk:market,ex:exFor(),sym:symbol,kind,tf:tfv,cond,value,fired:false});jset('alerts',alerts);renderAlerts();$('#alVal').value='';toast('Alert added · '+dispName());maybeAutoSync();}
 async function fetchFor(a){const S=SOURCES[a.ex||a.src||'binance'];return S.klineParse(await jfetch(S.klineUrl(a.sym,S.tf[a.tf],300)));}
 async function checkAlerts(){if(!alerts.length)return;const groups={};
   for(const a of alerts){if(a.off)continue;if(a.fired&&(a.cond==='lt'||a.cond==='gt'))continue;(groups[(a.mk||'crypto')+'|'+(a.src||'')+'|'+a.sym+'|'+a.tf]=groups[(a.mk||'crypto')+'|'+(a.src||'')+'|'+a.sym+'|'+a.tf]||[]).push(a);}
